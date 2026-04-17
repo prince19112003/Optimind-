@@ -1,11 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// src/core/aiClient.ts  –  Unified AI Client (Ollama + OpenAI + Gemini)
-// Supports streaming, circuit-breaker fallback, and model pull with progress.
+// src/core/aiClient.ts  –  Unified AI Client (Ollama + OpenAI + Gemini + Groq)
+// Supports streaming, circuit-breaker fallback, semantic cache, and model pull.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as vscode from 'vscode';
-import axios       from 'axios';
+import * as crypto  from 'crypto';
+import axios        from 'axios';
 
-export type Provider = 'ollama' | 'openai' | 'gemini';
+export type Provider = 'ollama' | 'openai' | 'gemini' | 'groq';
 
 export interface GenerateOptions {
     prompt:    string;
@@ -17,7 +18,32 @@ function cfg<T>(key: string): T {
     return vscode.workspace.getConfiguration('optimind-pro').get<T>(key)!;
 }
 
-// ── Circuit Breaker ───────────────────────────────────────────────────────────
+// ── Semantic Cache ──────────────────────────────────────────────────────────────────
+const _cache = new Map<string, string>();
+let _cacheHits = 0;
+let _cacheMisses = 0;
+
+function _cacheKey(prompt: string): string {
+    return crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 16);
+}
+
+function _cacheGet(key: string): string | undefined {
+    return cfg<boolean>('cacheEnabled') ? _cache.get(key) : undefined;
+}
+
+function _cacheSet(key: string, value: string): void {
+    if (!cfg<boolean>('cacheEnabled')) return;
+    _cache.set(key, value);
+    // Cap cache at 50 entries (LRU-lite: delete oldest)
+    if (_cache.size > 50) {
+        _cache.delete(_cache.keys().next().value!);
+    }
+}
+
+export function getCacheStats() { return { hits: _cacheHits, misses: _cacheMisses, size: _cache.size }; }
+export function clearCache()    { _cache.clear(); _cacheHits = 0; _cacheMisses = 0; }
+
+// ── Circuit Breaker ───────────────────────────────────────────────────────────────
 let _failures = 0;
 const FAILURE_THRESHOLD = 3;
 
@@ -47,32 +73,59 @@ export class AIClient {
         }
 
         const provider = cfg<Provider>('provider');
+        
+        // ── Semantic Cache Check ─────────────────────────────────────────────
+        // Skip cache for streaming (onToken) calls to allow live token display
+        if (!opts.onToken) {
+            const cacheKey = _cacheKey(opts.prompt);
+            const cached   = _cacheGet(cacheKey);
+            if (cached) {
+                _cacheHits++;
+                return cached;
+            }
+            _cacheMisses++;
+            
+            try {
+                let result: string;
+                if      (provider === 'ollama')  result = await this._ollama(opts);
+                else if (provider === 'openai')  result = await this._openai(opts);
+                else if (provider === 'groq')    result = await this._groq(opts);
+                else                             result = await this._gemini(opts);
+                _cacheSet(cacheKey, result);
+                recordSuccess();
+                return result;
+            } catch (err: any) {
+                recordFailure();
+                throw this._formatError(err, provider);
+            }
+        }
         try {
             let result: string;
-            if (provider === 'ollama')      result = await this._ollama(opts);
-            else if (provider === 'openai') result = await this._openai(opts);
-            else                           result = await this._gemini(opts);
+            if      (provider === 'ollama')  result = await this._ollama(opts);
+            else if (provider === 'openai')  result = await this._openai(opts);
+            else if (provider === 'groq')    result = await this._groq(opts);
+            else                             result = await this._gemini(opts);
             recordSuccess();
             return result;
         } catch (err: any) {
             recordFailure();
-            let details = err.message;
-
-            if (err.response?.data) {
-                if (typeof err.response.data === 'string') {
-                    try { details = JSON.parse(err.response.data).error || details; } catch { details = err.response.data; }
-                } else if (err.response.data.error && typeof err.response.data.error === 'string') {
-                    details = err.response.data.error;
-                }
-            }
-            
-            // Helpful hint for local 500s which are almost exclusively context constraints
-            if (err.response?.status === 500 && details.includes('500')) {
-                details += ' (Likely "Out of Memory" or Context Limit Exceeded on local GPU)';
-            }
-            
-            throw new Error(`[${provider}] ${details}`);
+            throw this._formatError(err, provider);
         }
+    }
+
+    private static _formatError(err: any, provider: string): Error {
+        let details = err.message;
+        if (err.response?.data) {
+            if (typeof err.response.data === 'string') {
+                try { details = JSON.parse(err.response.data).error || details; } catch { details = err.response.data; }
+            } else if (err.response.data.error && typeof err.response.data.error === 'string') {
+                details = err.response.data.error;
+            }
+        }
+        if (err.response?.status === 500 && details.includes('500')) {
+            details += ' (Likely "Out of Memory" or Context Limit Exceeded on local GPU)';
+        }
+        return new Error(`[${provider}] ${details}`);
     }
 
     // ── Health check ──────────────────────────────────────────────────────────
@@ -194,7 +247,7 @@ export class AIClient {
         return resp.data?.choices?.[0]?.message?.content ?? '';
     }
 
-    // ── Google Gemini provider ────────────────────────────────────────────────
+    // ── Google Gemini provider ───────────────────────────────────────────────────────────────
     private static async _gemini(opts: GenerateOptions): Promise<string> {
         const key   = await this._getSecret('gemini');
         const model = cfg<string>('geminiModel');
@@ -204,6 +257,30 @@ export class AIClient {
             { timeout: 60_000 }
         );
         return resp.data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    }
+
+    // ── Groq provider (OpenAI-compatible, ultra-fast inference) ────────────────────
+    private static async _groq(opts: GenerateOptions): Promise<string> {
+        const key   = await this._getSecret('groq');
+        const model = cfg<string>('groqModel');
+        const resp  = await axios.post(
+            'https://api.groq.com/openai/v1/chat/completions',
+            {
+                model,
+                messages: [
+                    { role: 'system', content: 'You are an elite code optimizer. Return exact JSON as instructed. No markdown.' },
+                    { role: 'user',   content: opts.prompt }
+                ],
+                temperature: 0.1,
+                max_tokens: 4096,
+                stream: false
+            },
+            {
+                headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+                timeout: 30_000    // Groq is fast — 30s is generous
+            }
+        );
+        return resp.data?.choices?.[0]?.message?.content ?? '';
     }
 
     // ── Secret storage ────────────────────────────────────────────────────────

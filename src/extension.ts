@@ -8,8 +8,8 @@ import { GhostTextProvider }  from './providers/ghostTextProvider';
 import { CommandManager }     from './utils/commandManager';
 
 export function activate(context: vscode.ExtensionContext) {
-    const out = vscode.window.createOutputChannel('OptiMind Pro');
-    out.appendLine('[OptiMind Pro] Activated ✅');
+    const out = vscode.window.createOutputChannel('OptiMind');
+    out.appendLine('[OptiMind] Activated ✅');
 
     // 1. Native History Tree View (rock-solid, never blank)
     const historyProvider = new HistoryProvider();
@@ -40,7 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
     const cmdManager = new CommandManager(context, dashboardProvider, historyProvider, ghostTextProvider, out);
     cmdManager.register();
 
-    out.appendLine('[OptiMind Pro] All providers registered.');
+    out.appendLine('[OptiMind] All providers registered.');
 }
 
 export function deactivate() {}

@@ -2,7 +2,7 @@
 // src/utils/commandManager.ts  –  All Command Registrations + Business Logic
 // ─────────────────────────────────────────────────────────────────────────────
 import * as vscode from 'vscode';
-import { AIClient }         from '../core/aiClient';
+import { AIClient, clearCache }  from '../core/aiClient';
 import { CodeAnalyzer }     from '../core/analyzer';
 import { SystemInfo }       from '../core/systemInfo';
 import { DashboardProvider } from '../providers/dashboardProvider';
@@ -44,16 +44,34 @@ export class CommandManager {
         };
 
         this._dashboard.onMessage = async (msg) => {
-            switch (msg.type) {
-                case 'analyzeNow':    await vscode.commands.executeCommand('optimind-pro.analyze');      break;
-                case 'scanWorkspace': await vscode.commands.executeCommand('optimind-pro.workspaceScan'); break;
-                case 'healthCheck':   await vscode.commands.executeCommand('optimind-pro.healthCheck');   break;
-                case 'setApiKey':     await vscode.commands.executeCommand('optimind-pro.setApiKey');     break;
-                case 'changeProvider': await this._onProviderChange(msg.provider); break;
-                case 'changeModel':    await this._onModelChange(msg.model);       break;
-                case 'pullModel':      await this._onPullModel(msg.model);         break;
-                case 'refreshModels':  await this._refreshOllamaState();           break;
-                case 'applyInline':    await this._applyInline();                  break;
+            // CRITICAL: wrap in try/catch — any unhandled throw here kills
+            // the entire async message loop, making the dashboard non-functional.
+            try {
+                switch (msg.type) {
+                    case 'analyzeNow':    await vscode.commands.executeCommand('optimind-pro.analyze');      break;
+                    case 'scanWorkspace': await vscode.commands.executeCommand('optimind-pro.workspaceScan'); break;
+                    case 'healthCheck':   await vscode.commands.executeCommand('optimind-pro.healthCheck');   break;
+                    case 'setApiKey':     await vscode.commands.executeCommand('optimind-pro.setApiKey');     break;
+                    case 'changeProvider': await this._onProviderChange(msg.provider); break;
+                    case 'changeModel':    await this._onModelChange(msg.model);       break;
+                    case 'pullModel':      await this._onPullModel(msg.model);         break;
+                    case 'refreshModels':  await this._refreshOllamaState();           break;
+                    case 'applyInline':    await this._applyInline();                  break;
+                    case 'clearCache': {
+                        clearCache();
+                        vscode.window.showInformationMessage('OptiMind ⚡ Semantic cache cleared!');
+                        break;
+                    }
+                    case 'restartExtension': {
+                        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+                        break;
+                    }
+                }
+            } catch (e: any) {
+                // Recover gracefully — log, show error, reset dashboard state
+                this._out.appendLine(`[OptiMind ERROR] Dashboard message handler: ${e.message}`);
+                this._dashboard.showError(e.message);
+                this._dashboard.setLoading(false);
             }
         };
     }
@@ -142,17 +160,9 @@ export class CommandManager {
             vscode.window.showErrorMessage('OptiMind: No recent optimization available to apply.');
             return;
         }
-
-        const targetUri = this._lastOptimized.document.uri.toString();
-        let editor = vscode.window.activeTextEditor;
-        
-        // When clicking dashboard, the active editor might lose focus. Search visible editors.
-        if (!editor || editor.document.uri.toString() !== targetUri) {
-            editor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === targetUri);
-        }
-
-        if (!editor) {
-            vscode.window.showErrorMessage('OptiMind: Please keep the original file open and visible to apply code.');
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.uri.toString() !== this._lastOptimized.document.uri.toString()) {
+            vscode.window.showErrorMessage('OptiMind: Please open the original file to apply code.');
             return;
         }
         await this._applyEntry(this._lastOptimized.entry, editor);
@@ -179,7 +189,9 @@ export class CommandManager {
 
         this._dashboard.setLoading(false);
 
-        if (result.optimized.trim() === code.trim() || result.explanation.toLowerCase().includes('already optimized')) {
+        // If already optimized, show a minimal summary and exit
+        if (result.optimized.trim() === code.trim() || result.reason?.toLowerCase().includes('already optimized')) {
+            this._dashboard.showResult(result.optimized, 'No change', 'Already optimized— no issues found.', 'No changes made.', lang);
             vscode.window.showInformationMessage('OptiMind: Code is already optimal and highly readable!');
             return;
         }
@@ -191,18 +203,29 @@ export class CommandManager {
             language:    lang,
             oldCode:     code,
             newCode:     result.optimized,
-            improvement: result.improvement || result.explanation.slice(0, 40),
+            improvement: result.complexity || result.improvement || result.explanation?.slice(0, 40) || '',
             range:       selection
         };
         this._lastOptimized = { entry, document: editor.document };
         this._history.add(entry);
 
+        // Show dual-pane result in dashboard
+        this._dashboard.showResult(
+            result.optimized,
+            result.complexity || result.improvement || 'N/A',
+            result.reason     || result.explanation  || '',
+            result.fix        || '',
+            lang
+        );
+
         // update score with details
         const res = this._analyzer.calculateScore(result.optimized, lang);
         this._dashboard.setScore(res.score, res.details);
 
-        // Project Inline Ghost Text (Copilot Style)
-        await this._ghostText.setAndTrigger(editor.document, selection, result.optimized);
+        // Project Inline Ghost Text (Copilot Style) \u2014 non-fatal if it fails
+        try {
+            await this._ghostText.setAndTrigger(editor.document, selection, result.optimized);
+        } catch { /* ghost text is a nice-to-have, never break the flow */ }
 
         vscode.window.showInformationMessage(
             `OptiMind ⚡ ${result.improvement || result.explanation}`,
@@ -364,7 +387,8 @@ export class CommandManager {
 
         // Convert exported MODEL_TIERS to a dictionary for the UI
         const allTiers: Record<string, {title: string, desc: string}> = {};
-        for (const [m, t] of Object.entries(SystemInfo.getTiers())) {
+        const { MODEL_TIERS } = require('../core/systemInfo');
+        for (const [m, t] of Object.entries(MODEL_TIERS as Record<string, any>)) {
             allTiers[m] = { title: t.title, desc: t.desc };
         }
 

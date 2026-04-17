@@ -17,10 +17,6 @@ export const MODEL_TIERS: Record<string, { minRam: number; title: string, desc: 
 };
 
 export class SystemInfo {
-    static getTiers(): Record<string, { minRam: number; title: string, desc: string }> {
-        return MODEL_TIERS;
-    }
-
     static getProfile(): HardwareProfile {
         const ramGb = Math.floor(os.totalmem() / 1024 / 1024 / 1024);
 

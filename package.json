@@ -1,6 +1,6 @@
 {
   "name": "optimind-pro",
-  "displayName": "OptiMind Pro",
+  "displayName": "OptiMind",
   "description": "Privacy-first AI code optimizer. Local Ollama + Cloud AI. Lightweight & reliable.",
   "version": "0.1.0",
   "publisher": "prince19112003",
@@ -18,10 +18,15 @@
     "Linters"
   ],
   "main": "./dist/extension.js",
+  "license": "MIT",
   "activationEvents": [
-    "onView:optimind-pro.dashboard",
-    "onView:optimind-pro.history",
-    "*"
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:python",
+    "onLanguage:cpp",
+    "onLanguage:c",
+    "onLanguage:go",
+    "onLanguage:java"
   ],
   "contributes": {
     "commands": [
@@ -112,10 +117,11 @@
           "enum": [
             "ollama",
             "openai",
-            "gemini"
+            "gemini",
+            "groq"
           ],
           "default": "ollama",
-          "description": "AI provider: Ollama (local/free), OpenAI, or Google Gemini."
+          "description": "AI provider: Ollama (local/free), OpenAI, Google Gemini, or Groq (fastest cloud)."
         },
         "optimind-pro.ollamaUrl": {
           "type": "string",
@@ -137,6 +143,16 @@
           "default": "gemini-2.0-flash",
           "description": "Google Gemini model to use."
         },
+        "optimind-pro.groqModel": {
+          "type": "string",
+          "default": "llama-3.3-70b-versatile",
+          "description": "Groq model to use (fastest inference). Recommended: llama-3.3-70b-versatile or mixtral-8x7b-32768."
+        },
+        "optimind-pro.cacheEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic caching. Identical code blocks return instant results without an AI round-trip."
+        },
         "optimind-pro.enableBenchmarking": {
           "type": "boolean",
           "default": true,
@@ -148,7 +164,7 @@
       "activitybar": [
         {
           "id": "optimind-pro-container",
-          "title": "OptiMind Pro",
+          "title": "OptiMind",
           "icon": "$(zap)"
         }
       ]
@@ -158,11 +174,13 @@
         {
           "type": "webview",
           "id": "optimind-pro.dashboard",
-          "name": "Dashboard"
+          "name": "Dashboard",
+          "icon": "$(dashboard)"
         },
         {
           "id": "optimind-pro.history",
-          "name": "Optimization History"
+          "name": "Optimization History",
+          "icon": "$(history)"
         }
       ]
     }

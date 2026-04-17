@@ -17,7 +17,9 @@ export type DashboardMessage =
     | { type: 'scanWorkspace' }
     | { type: 'healthCheck' }
     | { type: 'refreshModels' }
-    | { type: 'applyInline' };
+    | { type: 'applyInline' }
+    | { type: 'clearCache' }
+    | { type: 'restartExtension' };
 
 export class DashboardProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'optimind-pro.dashboard';
@@ -43,9 +45,14 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._buildHtml();
 
-        // Forward all messages from webview to the extension backend
-        webviewView.webview.onDidReceiveMessage((msg: DashboardMessage) => {
-            this.onMessage?.(msg);
+        // Forward all messages from webview to the extension backend.
+        // MUST be wrapped \u2014 an unhandled async throw in onMessage kills the IPC channel permanently.
+        webviewView.webview.onDidReceiveMessage(async (msg: DashboardMessage) => {
+            try {
+                await this.onMessage?.(msg);
+            } catch (e: any) {
+                // Silently absorb \u2014 errors are handled upstream in CommandManager
+            }
         });
 
         // Give the DOM ~300ms to fully parse before pushing initial state
@@ -76,6 +83,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
 
     public showError(msg: string): void {
         this._post({ type: 'showError', msg });
+    }
+
+    public showResult(code: string, complexity: string, reason: string, fix: string, lang: string): void {
+        this._post({ type: 'showResult', code, complexity, reason, fix, lang });
     }
 
     public updateModels(models: string[], recommended: string, safe: string[], allTiers: Record<string, {title: string, desc: string}>, activeModel: string): void {
@@ -116,285 +127,343 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${scriptNonce}';">
-<title>OptiMind Pro</title>
+<title>OptiMind</title>
 <style>
-/* ── Reset ── */
+/* ── Hide Scrollbar (Keep Scrolling) ── */
+*::-webkit-scrollbar { display: none; }
+* { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Reset & Modern Base ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-    font-family: var(--vscode-font-family, -apple-system, 'Segoe UI', sans-serif);
-    font-size: 12px;
+    font-family: 'Inter', var(--vscode-font-family, -apple-system, sans-serif);
+    font-size: 13px;
     color: var(--vscode-foreground);
     background: transparent;
-    padding: 8px 10px 20px;
+    padding: 12px 14px 24px;
     overflow-x: hidden;
 }
 
-/* ── Section title ── */
+/* ── Typography & Headings ── */
 .section-title {
     font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.09em;
+    font-weight: 800;
+    letter-spacing: 0.15em;
     text-transform: uppercase;
     color: var(--vscode-descriptionForeground);
-    margin: 14px 0 7px;
+    margin: 20px 0 10px;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
+    opacity: 0.8;
 }
 
-/* ── Engine dot ── */
+/* ── Engine dot glow ── */
 .dot {
-    width: 7px; height: 7px;
+    width: 8px; height: 8px;
     border-radius: 50%;
-    background: #89d185;
-    box-shadow: 0 0 5px #89d185;
+    background: #00ff88;
+    box-shadow: 0 0 8px #00ff88;
     flex-shrink: 0;
-    transition: background 0.4s, box-shadow 0.4s;
+    transition: all 0.5s ease;
 }
-.dot.offline { background: #f48771; box-shadow: 0 0 5px #f48771; }
+.dot.offline { background: #ff3366; box-shadow: 0 0 8px #ff3366; }
+
+/* ── Glassmorphism Cards ── */
+.glass-panel {
+    background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.03));
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
 
 /* ── Health card ── */
 .health-card {
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 10px 12px;
-    background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.04));
-    border: 1px solid var(--vscode-widget-border, #333);
-    border-radius: 7px;
+    gap: 16px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    transition: transform 0.2s ease;
 }
-.ring-svg { flex-shrink: 0; }
-.ring-bg { fill: none; stroke: var(--vscode-widget-border, #333); stroke-width: 5; }
+.health-card:hover { transform: translateY(-1px); }
+
+.ring-svg { flex-shrink: 0; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.2)); }
+.ring-bg { fill: none; stroke: rgba(255,255,255,0.05); stroke-width: 5; }
 .ring-fg {
     fill: none;
-    stroke: #89d185;
+    stroke: #00ff88;
     stroke-width: 5;
     stroke-linecap: round;
     transform-origin: center;
     transform: rotate(-90deg);
-    transition: stroke-dashoffset 0.6s cubic-bezier(.4,0,.2,1), stroke 0.4s;
+    transition: stroke-dashoffset 1s cubic-bezier(.4,0,.2,1), stroke 0.4s;
+    filter: drop-shadow(0 0 4px rgba(0,255,136,0.3));
 }
 .score-value {
-    font-size: 24px;
-    font-weight: 800;
-    color: #89d185;
+    font-size: 28px;
+    font-weight: 900;
+    color: #00ff88;
     line-height: 1;
+    text-shadow: 0 0 10px rgba(0,255,136,0.2);
+    letter-spacing: -0.03em;
     transition: color 0.4s;
 }
-.score-label { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 3px; }
+.score-label { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); margin-top: 4px; opacity: 0.8;}
 
 /* ── System info ── */
 .sysinfo {
     font-size: 10px;
     color: var(--vscode-descriptionForeground);
-    margin-top: 4px;
+    margin-top: 6px;
     font-style: italic;
+    opacity: 0.6;
 }
 
 /* ── Divider ── */
-hr { border: none; border-top: 1px solid var(--vscode-widget-border, #333); margin: 10px 0; }
+hr { border: none; border-top: 1px solid rgba(255,255,255,0.05); margin: 16px 0; }
 
-/* ── Buttons ── */
+/* ── Buttons (Premium Feel) ── */
 .btn {
     display: block;
     width: 100%;
-    padding: 8px 12px;
-    margin-bottom: 8px;
-    border: none;
-    border-radius: 5px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 700;
     font-family: inherit;
     text-align: left;
-    transition: opacity 0.15s;
+    transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
-.btn:hover { opacity: 0.82; }
+.btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0,0,0,0.2); opacity: 1 !important; }
+.btn:active { transform: translateY(0); }
+
 .btn-primary {
-    background: var(--vscode-button-background, #0e639c);
+    background: linear-gradient(135deg, var(--vscode-button-background, #0e639c), #007acc);
     color: var(--vscode-button-foreground, #fff);
-    font-weight: 700;
+    border-top: 1px solid rgba(255,255,255,0.15);
+    box-shadow: 0 4px 10px rgba(14,99,156,0.3);
 }
 .btn-secondary {
-    background: var(--vscode-button-secondaryBackground, #3a3d41);
+    background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.05));
     color: var(--vscode-button-secondaryForeground, #ccc);
+    border: 1px solid rgba(255,255,255,0.05);
 }
+.btn-secondary:hover { background: rgba(255,255,255,0.1); }
 
-/* ── Provider row ── */
+/* ── Inputs & Selects ── */
 .row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-bottom: 5px;
+    gap: 8px;
+    margin-bottom: 8px;
 }
 .row-label {
     font-size: 11px;
+    font-weight: 600;
     color: var(--vscode-descriptionForeground);
-    min-width: 46px;
+    min-width: 50px;
     flex-shrink: 0;
 }
 select, input[type="text"] {
     flex: 1;
-    background: var(--vscode-input-background, #3c3c3c);
-    color: var(--vscode-input-foreground, #ccc);
-    border: 1px solid var(--vscode-input-border, #555);
-    border-radius: 4px;
-    padding: 4px 6px;
-    font-size: 11px;
+    background: var(--vscode-dropdown-background, rgba(0,0,0,0.2));
+    color: var(--vscode-dropdown-foreground, #ccc);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
     font-family: inherit;
-    min-width: 0;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+option {
+    background: var(--vscode-dropdown-background, #252526);
+    color: var(--vscode-dropdown-foreground, #ccc);
 }
 select:focus, input[type="text"]:focus {
-    outline: 1px solid var(--vscode-focusBorder, #007acc);
+    outline: none;
+    border-color: var(--vscode-focusBorder, #007acc);
+    box-shadow: 0 0 0 2px rgba(0,122,204,0.2);
 }
+
 .btn-pull {
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: var(--vscode-button-background, #0e639c);
-    color: var(--vscode-button-foreground, #fff);
+    padding: 6px 12px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #0e639c, #007acc);
+    color: #fff;
     border: none;
     font-size: 11px;
     font-weight: 700;
     cursor: pointer;
-    white-space: nowrap;
-    transition: opacity 0.15s;
+    transition: all 0.2s;
+    box-shadow: 0 2px 6px rgba(14,99,156,0.3);
 }
-.btn-pull:hover { opacity: 0.82; }
-.btn-pull:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-pull:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(14,99,156,0.4); }
+.btn-pull:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-.model-hint { font-size: 10px; color: var(--vscode-descriptionForeground); font-style: italic; margin-top: 2px; }
+/* ── Result Panes (Terminal Style) ── */
+#summary-pane {
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    border-left: 3px solid #007acc;
+}
+.sum-label { font-weight: 700; color: var(--vscode-foreground); margin-right: 4px; }
+
+.terminal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px;
+    background: rgba(0,0,0,0.3);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.mac-dots { display: flex; gap: 5px; }
+.mac-dot { width: 10px; height: 10px; border-radius: 50%; }
+.mac-red { background: #ff5f56; } .mac-yellow { background: #ffbd2e; } .mac-green { background: #27c93f; }
+
+pre {
+    margin: 0; padding: 12px 14px;
+    font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.6;
+    overflow-y: auto; max-height: 240px;
+    white-space: pre-wrap; word-wrap: break-word;
+    background: rgba(0,0,0,0.15);
+}
 
 /* ── Model Cards ── */
-.model-grid {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 6px;
-    margin-bottom: 12px;
-}
+.model-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .m-card {
-    border: 1px solid var(--vscode-widget-border, #333);
-    border-radius: 6px;
-    padding: 8px 10px;
-    background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.04));
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.02);
     cursor: pointer;
     transition: all 0.2s ease;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    position: relative;
-    overflow: hidden;
+    display: flex; flex-direction: column; gap: 5px;
+    position: relative; overflow: hidden;
 }
-.m-card:hover { border-color: var(--vscode-focusBorder, #007acc); }
-.m-card.active { border-color: #89d185; background: rgba(137, 209, 133, 0.08); }
-.m-card.pulling { opacity: 0.6; pointer-events: none; }
-.m-card.pulling::after {
-    content: ""; position: absolute; bottom: 0; left: 0; height: 2px;
-    background: var(--vscode-focusBorder, #007acc);
-    animation: progress 1.5s infinite linear;
-}
-@keyframes progress { 0% { width: 0%; } 100% { width: 100%; } }
+.m-card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15); transform: translateY(-1px); }
+.m-card.active { border-color: #00ff88; background: rgba(0,255,136,0.05); box-shadow: 0 0 15px rgba(0,255,136,0.1) inset; }
+
 .m-head { display: flex; justify-content: space-between; align-items: center; }
-.m-title { font-weight: 700; font-size: 11px; color: var(--vscode-foreground); }
-.m-tag { font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; display: inline-flex; align-items: center; gap: 3px; }
-.tag-inst { background: rgba(137,209,133,0.15); color: #89d185; }
-.tag-pull { background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); }
-.m-desc { font-size: 10px; color: var(--vscode-descriptionForeground); font-style: italic; }
+.m-title { font-weight: 800; font-size: 12px; color: var(--vscode-foreground); }
+.m-tag { font-size: 9px; font-weight: 800; padding: 3px 6px; border-radius: 5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.tag-inst { background: rgba(0,255,136,0.15); color: #00ff88; }
+.tag-pull { background: rgba(0,122,204,0.2); color: #569cd6; }
+.m-desc { font-size: 10px; color: var(--vscode-descriptionForeground); font-style: italic; line-height: 1.3; }
 
 /* ── Key button ── */
 .btn-key {
-    width: 100%;
-    padding: 5px 8px;
-    border: 1px dashed var(--vscode-focusBorder, #007acc);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--vscode-foreground);
-    font-size: 11px;
-    font-family: inherit;
-    cursor: pointer;
-    transition: background 0.15s;
+    width: 100%; padding: 8px;
+    border: 1px dashed rgba(255,255,255,0.2); border-radius: 8px;
+    background: transparent; color: var(--vscode-foreground);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s;
 }
-.btn-key:hover { background: var(--vscode-button-secondaryBackground, #3a3d41); }
+.btn-key:hover { background: rgba(255,255,255,0.05); border-color: var(--vscode-focusBorder); }
 
-/* ── Loading overlay ── */
+/* ── Loading overlays ── */
 #loading-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: var(--vscode-editor-background, #1e1e1e);
-    opacity: 0.85;
-    z-index: 99;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 8px;
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    z-index: 99; flex-direction: column; gap: 12px;
+    align-items: center; justify-content: center;
 }
 #loading-overlay.active { display: flex; }
 .spinner {
-    width: 22px; height: 22px;
-    border: 3px solid transparent;
-    border-top-color: var(--vscode-button-background, #0e639c);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    width: 28px; height: 28px;
+    border: 3px solid rgba(255,255,255,0.1);
+    border-top-color: #007acc; border-radius: 50%;
+    animation: spin 0.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Error banner ── */
 #err {
-    display: none;
-    background: rgba(200,55,55,.12);
-    border: 1px solid rgba(200,55,55,.4);
-    border-radius: 5px;
-    padding: 6px 9px;
-    font-size: 11px;
-    color: #f48771;
-    margin-bottom: 8px;
-    gap: 6px;
-    align-items: flex-start;
+    display: none; background: rgba(255,51,102,0.1);
+    border: 1px solid rgba(255,51,102,0.3); border-radius: 6px;
+    padding: 8px 12px; font-size: 11px; font-weight: 500;
+    color: #ff3366; margin-bottom: 12px; gap: 8px; align-items: flex-start;
+    box-shadow: 0 4px 10px rgba(255,51,102,0.1);
 }
 #err.active { display: flex; }
-#err-close { cursor: pointer; margin-left: auto; }
+#err-close { cursor: pointer; margin-left: auto; opacity: 0.7; }
+#err-close:hover { opacity: 1; }
 </style>
 </head>
 <body>
 
-<!-- ── Loading Overlay ─────────────────────────────────────────────────── -->
+<!-- ── Top Bar: Refresh ── -->
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; padding-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.05);">
+  <span style="font-size:13px; font-weight:900; letter-spacing:-0.01em;">OptiMind</span>
+  <div style="display:flex; gap:6px;">
+    <button id="btn-clear-cache" title="Clear AI Cache" style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:6px; color:var(--vscode-descriptionForeground); font-size:10px; font-weight:700; cursor:pointer; padding:4px 8px; transition:all 0.2s;">🗑️ Cache</button>
+    <button id="btn-restart" title="Reload Extension" style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:6px; color:var(--vscode-descriptionForeground); font-size:10px; font-weight:700; cursor:pointer; padding:4px 8px; transition:all 0.2s;">🔄 Restart</button>
+  </div>
+</div>
+
+<!-- ── Loading Overlay ── -->
 <div id="loading-overlay">
     <div class="spinner"></div>
-    <span style="font-size:11px; color:var(--vscode-descriptionForeground);">Parsing context...</span>
+    <span style="font-size:12px; font-weight:600; color:#fff; letter-spacing:0.05em; text-shadow: 0 2px 4px rgba(0,0,0,0.5);">Analyzing context...</span>
 </div>
 
-<!-- ── Streaming Output ────────────────────────────────────────────────── -->
-<div id="stream-container" style="display:none; margin-bottom: 15px;">
-    <div style="font-size:11px; font-weight:700; margin-bottom: 6px; color:var(--vscode-descriptionForeground);">Live Optimization Stream</div>
-    
-    <div style="background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 6px; overflow: hidden; margin-bottom: 8px;">
-        <div id="stream-desc" style="padding: 10px; font-size: 11px; color: var(--vscode-foreground); border-bottom: 1px solid var(--vscode-widget-border); line-height: 1.4;">
-            <!-- Descriptions land here -->
-        </div>
-        <pre id="stream-code" style="padding: 10px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: #9cdcfe; margin:0; white-space: pre-wrap; word-wrap: break-word; overflow-y: auto; max-height: 250px; line-height: 1.4; background: rgba(0,0,0,0.2);">
-        </pre>
+<!-- ── Result Panes ── -->
+<div id="result-container" style="display:none; margin-bottom:18px;">
+  
+  <div id="summary-pane" class="glass-panel">
+    <div style="font-size:9px; font-weight:800; letter-spacing:0.1em; opacity:0.6; margin-bottom:10px;">ANALYSIS SUMMARY</div>
+    <div id="sum-complexity" style="font-size:12px; margin-bottom:6px; line-height:1.4; text-align: justify;"></div>
+    <div id="sum-reason"     style="font-size:12px; margin-bottom:6px; line-height:1.4; text-align: justify;"></div>
+    <div id="sum-fix"        style="font-size:12px; line-height:1.4; text-align: justify;"></div>
+  </div>
+
+  <div class="glass-panel" style="overflow:hidden; border:1px solid rgba(255,255,255,0.08);">
+    <div class="terminal-header">
+      <div class="mac-dots">
+         <div class="mac-dot mac-red"></div>
+         <div class="mac-dot mac-yellow"></div>
+         <div class="mac-dot mac-green"></div>
+      </div>
+      <span id="code-lang-tag" style="font-size:10px; font-weight:700; opacity:0.5; text-transform:uppercase;"></span>
     </div>
-    
-    <button class="btn btn-primary" id="btn-apply-inline" style="margin-top: 8px; font-weight: bold; text-align: center;">✅ Apply Code to Editor</button>
+    <pre id="stream-code" style="scrollbar-width:none; -ms-overflow-style:none;"></pre>
+  </div>
+
+  <button class="btn btn-primary" id="btn-apply-inline" style="margin-top:12px; justify-content:center; padding:12px;">✅ Apply Code to Editor</button>
 </div>
 
-<!-- ── Error Banner ────────────────────────────────────────────────────── -->
+<!-- ── Streaming progress ── -->
+<div id="stream-container" style="display:none; margin-bottom:18px;">
+    <div style="font-size:11px; font-weight:800; margin-bottom:8px; color:var(--vscode-descriptionForeground); letter-spacing:0.05em;">AI IS GENERATING…</div>
+    <pre id="stream-output" class="glass-panel" style="color:#00ff88; text-shadow: 0 0 5px rgba(0,255,136,0.3); border:1px solid rgba(0,255,136,0.2);"></pre>
+</div>
+
+<!-- ── Error Banner ── -->
 <div id="err">
-    <span id="err-text">Error occurred.</span>
+    <span id="err-text" style="line-height:1.4;">Error occurred.</span>
     <span id="err-close" title="Dismiss">✕</span>
 </div>
 
-<!-- ── Code Health ─────────────────────────────────────────────────────── -->
+<!-- ── Code Health ── -->
 <div class="section-title">
     Code Health
     <span class="dot" id="dot" title="Engine status"></span>
 </div>
 
-<div class="health-card">
-    <svg class="ring-svg" width="52" height="52" viewBox="0 0 52 52">
-        <circle class="ring-bg" cx="26" cy="26" r="21"/>
-        <circle class="ring-fg" id="ring-fg" cx="26" cy="26" r="21"/>
+<div class="health-card glass-panel">
+    <svg class="ring-svg" width="56" height="56" viewBox="0 0 56 56">
+        <circle class="ring-bg" cx="28" cy="28" r="24"/>
+        <circle class="ring-fg" id="ring-fg" cx="28" cy="28" r="24"/>
     </svg>
     <div style="flex:1;">
         <div class="score-value" id="score-val">100%</div>
@@ -402,13 +471,12 @@ select:focus, input[type="text"]:focus {
         <div class="sysinfo" id="sysinfo"></div>
     </div>
 </div>
-<div id="health-details" style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">
-    <!-- Populated by JS -->
+<div id="health-details" style="margin-top:10px; display:flex; flex-direction:column; gap:6px; padding:0 4px;">
 </div>
 
 <hr>
 
-<!-- ── Actions ─────────────────────────────────────────────────────────── -->
+<!-- ── Actions ── -->
 <div class="section-title">Actions</div>
 <button class="btn btn-primary"   id="btn-analyze">⚡ Optimize Selected Code</button>
 <button class="btn btn-secondary" id="btn-scan">🔍 Scan Workspace for Debt</button>
@@ -416,43 +484,41 @@ select:focus, input[type="text"]:focus {
 
 <hr>
 
-<!-- ── AI Provider ──────────────────────────────────────────────────────── -->
+<!-- ── AI Provider ── -->
 <div class="section-title">AI Provider</div>
 
 <div class="row">
-    <span class="row-label">Provider</span>
+    <span class="row-label">Engine</span>
     <select id="sel-provider">
         <option value="ollama">🖥️ Ollama (Local)</option>
         <option value="openai">🌐 OpenAI</option>
         <option value="gemini">✨ Gemini</option>
+        <option value="groq">⚡ Groq (Fastest)</option>
     </select>
 </div>
 
-<!-- Ollama model section (shown only for Ollama) -->
-<details id="ollama-section" style="background: var(--vscode-editor-inactiveSelectionBackground, rgba(255,255,255,0.02)); border: 1px solid var(--vscode-widget-border, #333); border-radius: 6px; padding: 6px 10px; margin-top: 5px; margin-bottom: 15px;">
-    <summary style="cursor: pointer; font-size: 11px; font-weight: 700; padding: 4px 0; outline: none; list-style: none; display: flex; align-items: center; justify-content: space-between;">
+<details id="ollama-section" class="glass-panel" style="padding: 10px 14px; margin-top: 10px; margin-bottom: 20px;">
+    <summary style="cursor: pointer; font-size: 12px; font-weight: 800; padding: 4px 0; outline: none; list-style: none; display: flex; align-items: center; justify-content: space-between;">
         <span>🤖 Local Model Configuration</span>
-        <span style="font-size: 10px; opacity: 0.5;">Click to toggle</span>
+        <span style="font-size: 10px; opacity: 0.4; font-weight: 500;">Click to toggle</span>
     </summary>
-    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--vscode-widget-border, #333);">
-        <div class="row" style="justify-content: space-between; margin-bottom: 2px;">
-            <span class="row-label">Highly Accurate Models</span>
-            <span id="btn-refresh-models" title="Refresh install status" style="cursor:pointer; font-size:10px;">🔄 Sync</span>
+    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05);">
+        <div class="row" style="justify-content: space-between; margin-bottom: 4px;">
+            <span class="row-label" style="font-size:10px; letter-spacing:0.05em; text-transform:uppercase;">Highly Accurate Models</span>
+            <span id="btn-refresh-models" title="Refresh install status" style="cursor:pointer; font-size:11px; opacity:0.8;">🔄 Sync</span>
         </div>
         
         <div id="model-grid" class="model-grid">
-            <!-- Populated by JS -->
         </div>
 
-        <div class="row" style="margin-top: 10px;">
-            <input type="text" id="inp-custom" placeholder="Custom model e.g. codellama:7b" />
+        <div class="row" style="margin-top: 14px;">
+            <input type="text" id="inp-custom" placeholder="Custom model e.g. qwen2:7b" />
             <button class="btn-pull" id="btn-pull">⬇️ Pull</button>
         </div>
     </div>
 </details>
 
-<!-- Cloud API key section (shown only for cloud providers) -->
-<div id="cloud-section" style="display:none;">
+<div id="cloud-section" style="display:none; margin-top: 10px;">
     <button class="btn-key" id="btn-apikey">🔑 Set API Key (Secure Vault)</button>
 </div>
 
@@ -513,9 +579,11 @@ select:focus, input[type="text"]:focus {
     }
 
     function setProvider(p) {
-        document.getElementById('sel-provider').value = p;
+        var selEl = document.getElementById('sel-provider');
+        if (selEl) selEl.value = p;
         const ol = document.getElementById('ollama-section');
         const cl = document.getElementById('cloud-section');
+        if (!ol || !cl) return;
         if (p === 'ollama') {
             ol.style.display = 'block';
             cl.style.display = 'none';
@@ -525,70 +593,85 @@ select:focus, input[type="text"]:focus {
         }
     }
 
-    // ── Button listeners ───────────────────────────────────────────────────
+    // ── Button listeners ────────────────────────────────────────────────────
     function post(type, extra) {
+        try { hideError(); } catch(e) {}
+        try { vscode.postMessage(Object.assign({ type: type }, extra || {})); } catch(e) {}
+    }
+
+    // Safe bind helper \u2014 prevents null crash killing the whole JS context
+    function on(id, event, fn) {
+        try {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener(event, fn);
+        } catch(e) {}
+    }
+
+    on('btn-analyze', 'click', function () { post('analyzeNow'); });
+    on('btn-scan',    'click', function () { post('scanWorkspace'); });
+    on('btn-health',  'click', function () { post('healthCheck'); });
+    on('btn-apikey',  'click', function () { post('setApiKey'); });
+    on('err-close',   'click', hideError);
+
+    on('btn-restart', 'click', function () {
+        this.textContent = '⏳ Restarting...';
+        var self = this;
+        setTimeout(function() { post('restartExtension'); }, 300);
+    });
+
+    on('btn-clear-cache', 'click', function () {
+        post('clearCache');
+        this.textContent = '✅ Cleared!';
+        var self = this;
+        setTimeout(function() { self.textContent = '🗑️ Cache'; }, 2000);
+    });
+
+    on('btn-apply-inline', 'click', function () {
+        post('applyInline');
+        this.textContent = '\u2705 Applied!';
+        var self = this;
+        setTimeout(function () { self.textContent = '\u2705 Apply Code to Editor'; }, 2000);
+    });
+
+    on('sel-provider', 'change', function () {
+        var p = this.value;
+        setProvider(p);
+        post('changeProvider', { provider: p });
+    });
+
+    on('btn-refresh-models', 'click', function () {
+        this.style.opacity = '0.5';
+        var self2 = this;
+        setTimeout(function () { self2.style.opacity = '1'; }, 500);
+        post('refreshModels');
+    });
+
+    on('btn-pull', 'click', function () {
+        var inp = document.getElementById('inp-custom');
+        var name = inp ? inp.value.trim() : '';
+        if (!name) return;
+        this.disabled = true;
+        this.textContent = '\u23f3';
         hideError();
-        vscode.postMessage(Object.assign({ type: type }, extra || {}));
-    }
+        post('pullModel', { model: name });
+    });
 
-    function bindClick(id, fn) {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('click', fn);
-    }
-
-    bindClick('btn-analyze', function () { post('analyzeNow'); });
-    bindClick('btn-scan',    function () { post('scanWorkspace'); });
-    bindClick('btn-health',  function () { post('healthCheck'); });
-    bindClick('btn-apikey',  function () { post('setApiKey'); });
-
-    // New Apply Button
-    const applyBtn = document.getElementById('btn-apply-inline');
-    if (applyBtn) {
-        applyBtn.addEventListener('click', function () {
-            post('applyInline');
-            this.textContent = '✅ Applied!';
-            setTimeout(() => { this.textContent = '✅ Apply Code to Editor'; }, 2000);
-        });
-    }
-
-    bindClick('err-close', hideError);
-
-    const selProv = document.getElementById('sel-provider');
-    if (selProv) {
-        selProv.addEventListener('change', function () {
-            const p = this.value;
-            setProvider(p);
-            post('changeProvider', { provider: p });
-        });
-    }
-
-    const btnRef = document.getElementById('btn-refresh-models');
-    if (btnRef) {
-        btnRef.addEventListener('click', function () {
-            this.style.opacity = '0.5';
-            setTimeout(() => this.style.opacity = '1', 500);
-            post('refreshModels');
-        });
-    }
-
-    // Pull button
-    var pullBtn = document.getElementById('btn-pull');
-    if (pullBtn) {
-        pullBtn.addEventListener('click', function () {
-            var name = document.getElementById('inp-custom').value.trim();
-            if (!name) return;
-            pullBtn.disabled = true;
-            pullBtn.textContent = '⏳';
-            hideError();
-            post('pullModel', { model: name });
-        });
-        
-        const inpCustom = document.getElementById('inp-custom');
-        if (inpCustom) {
-            inpCustom.addEventListener('keydown', function (e) {
-                if (e.key === 'Enter') pullBtn.click();
-            });
+    on('inp-custom', 'keydown', function (e) {
+        if (e.key === 'Enter') {
+            var btn = document.getElementById('btn-pull');
+            if (btn) btn.click();
         }
+    });
+
+    // ── Syntax highlighter (basic token coloring) ──────────────────────────
+    function highlight(code) {
+        try {
+            var esc = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            esc = esc.replace(/([0-9]+\.?[0-9]*)/g, '<span style="color:#b5cea8;">$1</span>');
+            var kwRe = new RegExp('(\\b)(return|if|else|for|while|const|let|var|function|class|import|export|from|default|new|typeof|void|null|undefined|true|false|int|char|bool|float|double|long|struct|enum|static|async|await|try|catch|throw|interface|type|extends|implements)(\\b)', 'g');
+            esc = esc.replace(kwRe, '$1<span style="color:#569cd6;">$2</span>$3');
+            return esc;
+        } catch(e) { return code; }
     }
 
     // ── Message listener (from extension backend) ──────────────────────────
@@ -618,48 +701,54 @@ select:focus, input[type="text"]:focus {
             case 'engineStatus': setEngineStatus(msg.online); break;
             case 'setLoading':  {
                 setLoading(msg.active);
-                // Do NOT hide the stream-container on complete, leave it so user can click Apply!
+                // When loading ends, hide the raw stream progress pane
+                if (!msg.active) {
+                    var sc = document.getElementById('stream-container');
+                    if (sc) sc.style.display = 'none';
+                }
                 break;
             }
             case 'startStream': {
-                var container = document.getElementById('stream-container');
-                if (container) container.style.display = 'block';
-                var sd = document.getElementById('stream-desc');
-                var sc = document.getElementById('stream-code');
-                if (sd) sd.innerHTML = '';
-                if (sc) sc.textContent = '';
-                window._streamBuf = '';
-                window._streamState = 'desc'; // 'desc' | 'code' | 'none'
-                
+                // Show streaming progress, hide old result
+                var sc = document.getElementById('stream-container');
+                if (sc) sc.style.display = 'block';
+                var rc = document.getElementById('result-container');
+                if (rc) rc.style.display = 'none';
+                var so = document.getElementById('stream-output');
+                if (so) so.textContent = '';
                 // Hide spinner while streaming
                 var lo = document.getElementById('loading-overlay');
                 if (lo) lo.classList.remove('active');
                 break;
             }
             case 'streamToken': {
-                window._streamBuf = (window._streamBuf || '') + msg.token;
-                
-                // Extract desc and code actively
-                var buf = window._streamBuf;
-                var sd = document.getElementById('stream-desc');
-                var sc = document.getElementById('stream-code');
-                
-                // Super basic regex to extract tags live
-                var descMatch = buf.match(/<desc>([\s\S]*?)(?:<\/desc>|$)/);
-                var codeMatch = buf.match(/<code>([\s\S]*?)(?:<\/code>|$)/);
-                
-                if (sd && descMatch) {
-                    var html = descMatch[1].replace(/\n/g, '<br/>');
-                    // simple bolding
-                    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-                    sd.innerHTML = html;
+                var so = document.getElementById('stream-output');
+                if (so) {
+                    so.textContent += msg.token;
+                    so.scrollTop = so.scrollHeight;
                 }
-                if (sc && codeMatch) {
-                    var tick3 = String.fromCharCode(96, 96, 96);
-                    var cleanCode = codeMatch[1].replace(new RegExp('^' + tick3 + '[\\\\w]*\\\\n'), '').replace(new RegExp(tick3 + '$'), '').trim();
-                    sc.textContent = cleanCode;
-                    sc.scrollTop = sc.scrollHeight;
-                }
+                break;
+            }
+            case 'showResult': {
+                // Hide streaming pane, show dual-pane result
+                var sc2 = document.getElementById('stream-container');
+                if (sc2) sc2.style.display = 'none';
+                var rc2 = document.getElementById('result-container');
+                if (rc2) rc2.style.display = 'block';
+
+                // Summary lines
+                var sc3 = document.getElementById('sum-complexity');
+                if (sc3) sc3.innerHTML = msg.complexity ? '📊 <strong>Complexity:</strong> ' + msg.complexity : '';
+                var sr  = document.getElementById('sum-reason');
+                if (sr)  sr.innerHTML  = msg.reason    ? '⚠️ <strong>Problem:</strong> '    + msg.reason    : '';
+                var sf  = document.getElementById('sum-fix');
+                if (sf)  sf.innerHTML  = msg.fix       ? '✅ <strong>Fix:</strong> '           + msg.fix       : '';
+
+                // Code pane with syntax highlight
+                var codeEl = document.getElementById('stream-code');
+                if (codeEl) codeEl.innerHTML = highlight(msg.code || '');
+                var lt = document.getElementById('code-lang-tag');
+                if (lt) lt.textContent = msg.lang || '';
                 break;
             }
             case 'showError':   setLoading(false); showError(msg.msg); break;
@@ -691,7 +780,7 @@ select:focus, input[type="text"]:focus {
                     
                     var titleInfo = document.createElement('span');
                     titleInfo.className = 'm-title';
-                    titleInfo.innerHTML = t.title + ' <span style="font-size:9px; opacity:0.6; font-weight:normal; margin-left:4px;">[' + mId + ']</span>';
+                    titleInfo.textContent = t.title;
                     
                     var tag = document.createElement('span');
                     tag.className = 'm-tag';
