@@ -310,23 +310,44 @@ export class CommandManager {
     }
 
     private async _cmdSetApiKey(): Promise<void> {
-        const provider = await vscode.window.showQuickPick(['openai', 'gemini'], {
-            placeHolder: 'Choose provider to set key for'
+        const cfg = vscode.workspace.getConfiguration('optimind-pro');
+        const activeProv = cfg.get<string>('provider') ?? 'ollama';
+
+        const providerLabels: Record<string, string> = {
+            openai: '🌐 OpenAI',
+            gemini: '✨ Google Gemini',
+            groq:   '⚡ Groq'
+        };
+
+        const items = Object.entries(providerLabels).map(([id, label]) => ({
+            label,
+            id,
+            description: id === activeProv ? '(currently active)' : ''
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Choose which provider\'s API key to set'
         });
-        if (!provider) return;
+        if (!selected) return;
+
+        const provider = selected.id;
 
         const key = await vscode.window.showInputBox({
-            prompt:     `Enter your ${provider === 'openai' ? 'OpenAI' : 'Google Gemini'} API key`,
-            password:   true,
-            ignoreFocusOut: true
+            prompt:         `Enter your ${providerLabels[provider]} API key`,
+            password:       true,
+            ignoreFocusOut: true,
+            placeHolder:    provider === 'groq'
+                ? 'Get your free key at console.groq.com'
+                : provider === 'openai'
+                ? 'sk-...'
+                : 'AIza...'
         });
         if (!key) return;
 
         await AIClient.saveSecret(provider, key);
-        await vscode.workspace.getConfiguration('optimind-pro')
-            .update('provider', provider, vscode.ConfigurationTarget.Global);
+        await cfg.update('provider', provider, vscode.ConfigurationTarget.Global);
         this._dashboard.updateProvider(provider);
-        vscode.window.showInformationMessage(`OptiMind: 🔑 ${provider} key saved securely.`);
+        vscode.window.showInformationMessage(`OptiMind: 🔑 ${providerLabels[provider]} key saved securely. Engine switched to ${providerLabels[provider]}.`);
     }
 
     private async _cmdApplyLast(): Promise<void> {
