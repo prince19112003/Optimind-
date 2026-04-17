@@ -10,10 +10,10 @@ export interface HardwareProfile {
 }
 
 export const MODEL_TIERS: Record<string, { minRam: number; title: string, desc: string }> = {
-    'deepseek-coder:1.3b':   { minRam: 4,  title: 'Fast & Light (4GB)', desc: 'Best for old PCs' },
-    'qwen2.5-coder:7b':      { minRam: 8,  title: 'Balanced (8GB) Recommended', desc: 'Smart & fast for daily use' },
-    'deepseek-coder:6.7b':   { minRam: 16, title: 'High Logic (16GB)', desc: 'Deep context analysis' },
-    'deepseek-coder-v2':     { minRam: 32, title: 'Enterprise (32GB)', desc: 'Maximum intelligence' },
+    'deepseek-coder:1.3b':   { minRam: 4,  title: 'deepseek-coder:1.3b (Fast)', desc: 'Size: 776 MB · Best for old PCs' },
+    'qwen2.5-coder:7b':      { minRam: 8,  title: 'qwen2.5-coder:7b (Rec.)', desc: 'Size: 4.7 GB · Smart & fast for daily use' },
+    'deepseek-coder:6.7b':   { minRam: 16, title: 'deepseek-coder:6.7b', desc: 'Size: 3.8 GB · Deep context analysis' },
+    'deepseek-coder-v2':     { minRam: 32, title: 'deepseek-coder-v2', desc: 'Size: 8.9 GB · Maximum intelligence' },
 };
 
 export class SystemInfo {

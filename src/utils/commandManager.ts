@@ -57,6 +57,7 @@ export class CommandManager {
                     case 'pullModel':      await this._onPullModel(msg.model);         break;
                     case 'refreshModels':  await this._refreshOllamaState();           break;
                     case 'applyInline':    await this._applyInline();                  break;
+                    case 'cancelPull':     AIClient.abortPull();                       break;
                     case 'clearCache': {
                         clearCache();
                         vscode.window.showInformationMessage('OptiMind ⚡ Semantic cache cleared!');
@@ -360,6 +361,7 @@ export class CommandManager {
                 async (progress) => {
                     await AIClient.pullModel(modelName, (pct, status) => {
                         progress.report({ increment: pct, message: `${status} (${pct}%)` });
+                        this._dashboard.notifyPullProgress(pct, status);
                     });
                 }
             );
@@ -390,6 +392,13 @@ export class CommandManager {
         const { MODEL_TIERS } = require('../core/systemInfo');
         for (const [m, t] of Object.entries(MODEL_TIERS as Record<string, any>)) {
             allTiers[m] = { title: t.title, desc: t.desc };
+        }
+
+        // Add any custom installed models to the grid dynamically
+        for (const m of models) {
+            if (!allTiers[m]) {
+                allTiers[m] = { title: m, desc: 'Custom installed model' };
+            }
         }
 
         const activeModel = vscode.workspace.getConfiguration('optimind-pro').get<string>('defaultModel') || profile.recommendedModel;

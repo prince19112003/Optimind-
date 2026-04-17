@@ -105,6 +105,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider {
         this._post({ type: 'pullComplete' });
     }
 
+    public notifyPullProgress(pct: number, status: string): void {
+        this._post({ type: 'pullProgress', pct, status });
+    }
+
     public notifyPullError(msg: string): void {
         this._post({ type: 'pullError', msg });
     }
@@ -511,9 +515,10 @@ pre {
         <div id="model-grid" class="model-grid">
         </div>
 
-        <div class="row" style="margin-top: 14px;">
-            <input type="text" id="inp-custom" placeholder="Custom model e.g. qwen2:7b" />
-            <button class="btn-pull" id="btn-pull">⬇️ Pull</button>
+        <div class="row" style="margin-top: 14px; flex-wrap: nowrap;">
+            <input type="text" id="inp-custom" placeholder="Custom model e.g. qwen2:7b" style="min-width: 0; flex: 1;" />
+            <button class="btn-pull" id="btn-pull" style="flex-shrink:0;">⬇️ Pull</button>
+            <button class="btn-pull" id="btn-cancel-pull" style="display:none; flex-shrink:0; background:rgba(255,50,50,0.1); border-color:rgba(255,50,50,0.3); color:#ff6b6b; padding:6px 10px;" title="Cancel">❌</button>
         </div>
     </div>
 </details>
@@ -829,15 +834,34 @@ pre {
             case 'pullComplete':
                 pullBtn.disabled = false;
                 pullBtn.textContent = '⬇️ Pull';
+                document.getElementById('btn-cancel-pull').style.display = 'none';
                 document.getElementById('inp-custom').value = '';
+                break;
+            case 'pullProgress':
+                pullBtn.disabled = true;
+                pullBtn.textContent = '⏳ ' + msg.pct + '% ' + (msg.status || '');
+                document.getElementById('btn-cancel-pull').style.display = 'block';
                 break;
             case 'pullError':
                 pullBtn.disabled = false;
                 pullBtn.textContent = '⬇️ Pull';
+                document.getElementById('btn-cancel-pull').style.display = 'none';
                 showError('Pull failed: ' + (msg.msg || 'unknown error'));
                 break;
         }
     });
+
+    // Wire up cancel button
+    var cancelBtn = document.getElementById('btn-cancel-pull');
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', function() {
+            post('cancelPull');
+            var pullBtn = document.getElementById('btn-pull');
+            pullBtn.disabled = false;
+            pullBtn.textContent = '⬇️ Pull';
+            this.style.display = 'none';
+        });
+    }
 
     // Initial state — tell backend we are ready
     vscode.postMessage({ type: 'ready' });

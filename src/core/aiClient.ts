@@ -147,15 +147,26 @@ export class AIClient {
     }
 
     // ── Pull a model with progress callback ───────────────────────────────────
+    private static _pullController: AbortController | null = null;
+
+    static abortPull(): void {
+        if (this._pullController) {
+            this._pullController.abort();
+            this._pullController = null;
+        }
+    }
+
     static async pullModel(
         model: string,
         onProgress: (pct: number, status: string) => void
     ): Promise<void> {
+        this.abortPull();
+        this._pullController = new AbortController();
         const url  = cfg<string>('ollamaUrl');
         const resp = await axios.post(
             `${url}/api/pull`,
             { name: model, stream: true },
-            { responseType: 'stream', timeout: 0 }
+            { responseType: 'stream', timeout: 0, signal: this._pullController.signal }
         );
 
         return new Promise((resolve, reject) => {
@@ -171,7 +182,13 @@ export class AIClient {
                         const pct = obj.total
                             ? Math.round((obj.completed / obj.total) * 100)
                             : 0;
-                        onProgress(pct, obj.status ?? '');
+                        let stat = obj.status ?? '';
+                        if (obj.total) {
+                            const gbTotal = (obj.total / 1e9).toFixed(2);
+                            const gbDone  = ((obj.completed || 0) / 1e9).toFixed(2);
+                            stat += ` [${gbDone}GB / ${gbTotal}GB]`;
+                        }
+                        onProgress(pct, stat);
                         if (obj.status === 'success') resolve();
                     } catch { /* incomplete JSON */ }
                 }
